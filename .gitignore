@@ -1,0 +1,42 @@
+# Byte-compiled / compiled Python files
+**/__pycache__/
+*.py[cod]
+*$PYTHON_EXTENSIONS
+
+# Virtual environment
+venv/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Cache and logs
+cache/
+*.log
+
+# Ignore compiled files
+*.out
+*.o
+*.so
+*.a
+
+# Maps dependencies
+maps/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+node_modules
+
+backend/upload.py
