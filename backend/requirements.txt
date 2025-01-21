@@ -1,5 +1,7 @@
 flask
 flask-cors
-pandas
 geopandas
 shapely
+requests
+pandas
+gunicorn  # For deploying Flask
