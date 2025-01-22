@@ -163,11 +163,15 @@ def run_streamlit():
         demand_centers.append({"id": i + 1, "latitude": lat, "longitude": lon})
 
     if st.button("Generate Outlets"):
+        progress_bar=st.progress(0)
         try:
+            progress_bar.progress(10)
             response = requests.post(f"http://localhost:5000/demand-centers", json={"demandCenters": demand_centers})
+            progress_bar.progress(50)
             response_data = response.json()
 
             if response.status_code == 200:
+                progress_bar.progress(80)
                 st.success("Optimization successful!")
                 map_url = response_data.get("map_url")
                 assignments = pd.DataFrame(response_data.get("assignments", []))
@@ -190,6 +194,7 @@ def run_streamlit():
                             st.error(f"Failed to load GeoJSON: {e}")
 
                     view_geojson()
+                progress_bar.progress(100)
 
             else:
                 st.error(f"Error: {response_data.get('error', 'Unknown error')}")
