@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+import threading
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import pandas as pd
@@ -9,14 +10,17 @@ from shapely.geometry import Point
 from optimization import optimize_outlet_location_fast as optimize_outlet_location
 from visualization import visualize_map
 from osm_utils import load_graph_from_osrm_route
+import streamlit as st
+import requests
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Flask app setup
 app = Flask(__name__)
 CORS(app)  # Enable CORS for cross-origin requests
 
-# Define folders and files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAPS_FOLDER = os.path.join(BASE_DIR, "maps")
 os.makedirs(MAPS_FOLDER, exist_ok=True)
@@ -24,10 +28,8 @@ os.makedirs(MAPS_FOLDER, exist_ok=True)
 DISTRICTS_FILE = os.path.join(BASE_DIR, "india_district.geojson")
 districts_gdf = gpd.read_file(DISTRICTS_FILE)
 
-# Cached population data file
 POPULATION_DATA_FILE = os.path.join(BASE_DIR, "district_population_all_pages.csv")
 
-# Load population data
 if os.path.exists(POPULATION_DATA_FILE):
     district_population_df = pd.read_csv(POPULATION_DATA_FILE)
     district_population_df.columns = district_population_df.columns.str.strip().str.lower()
@@ -80,7 +82,6 @@ def demand_centers():
             demand_centers = pd.DataFrame(data['demandCenters']).rename(columns={'latitude': 'lat', 'longitude': 'lon'})
             logging.debug(f"Processed demand centers: {demand_centers}")
 
-            # Assign districts and population
             demand_centers['district'] = demand_centers.apply(lambda row: find_district(row['lat'], row['lon']), axis=1)
             demand_centers['population'] = demand_centers.apply(
                 lambda row: get_population_by_district(row['district']) if pd.isna(row.get('population', None)) else row['population'], axis=1
@@ -90,13 +91,11 @@ def demand_centers():
 
             logging.debug(f"Final demand centers: {demand_centers}")
 
-            # Determine bounding box for road graph
             min_lat, max_lat = demand_centers['lat'].min(), demand_centers['lat'].max()
             min_lon, max_lon = demand_centers['lon'].min(), demand_centers['lon'].max()
 
             logging.info(f"Bounding box: ({min_lat}, {min_lon}) to ({max_lat}, {max_lon})")
 
-            # Load road network
             road_graph = load_graph_from_osrm_route(min_lat, min_lon, max_lat, max_lon)
             if road_graph is None:
                 logging.warning("Road graph failed to load. Using GIS fallback.")
@@ -105,26 +104,22 @@ def demand_centers():
                     'demand_centers': demand_centers.to_dict(orient='records')
                 })
 
-            # Select initial outlets
             n_outlets = min(5, len(demand_centers))
             initial_outlets = demand_centers.sample(n_outlets, random_state=42).reset_index(drop=True)
             initial_outlets['id'] = range(1, n_outlets + 1)
 
             logging.debug(f"Initialized outlets: {initial_outlets}")
 
-            # Optimize outlets
             logging.info("Optimizing outlet locations...")
             assignments, optimized_outlets = optimize_outlet_location(initial_outlets, demand_centers, road_graph)
             logging.info("Optimization completed.")
 
-            # Generate GeoJSON map
             map_file_path = os.path.join(MAPS_FOLDER, "optimized_retail_map_with_connections.geojson")
             visualize_map(optimized_outlets, demand_centers, assignments, road_graph, map_file_path=map_file_path)
 
-            # Ensure the file is fully written before returning
             while not os.path.exists(map_file_path):
-                time.sleep(0.1)  # Wait for file to be written
-            time.sleep(0.5)  # Additional buffer
+                time.sleep(0.1)
+            time.sleep(0.5)
 
             return jsonify({
                 'message': 'Optimization successful!',
@@ -138,9 +133,6 @@ def demand_centers():
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_file(filename):
-    """
-    Serve the GeoJSON file with caching disabled to ensure users always receive the latest version.
-    """
     try:
         response = send_from_directory(MAPS_FOLDER, filename, as_attachment=False)
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -151,5 +143,66 @@ def download_file(filename):
         logging.error(f"Error downloading file: {e}")
         return jsonify({'error': 'File not found'}), 404
 
+# Streamlit setup
+def run_streamlit():
+    st.title("Optimal Outlet Locator")
+    st.write("Enter demand center data to generate optimal retail outlet locations.")
+
+    num_centers = st.number_input("Number of Demand Centers", min_value=1, step=1, value=1)
+
+    st.write("Enter Latitude and Longitude for each Demand Center:")
+    demand_centers = []
+
+    for i in range(num_centers):
+        col1, col2 = st.columns(2)
+        with col1:
+            lat = st.number_input(f"Latitude {i + 1}", key=f"lat_{i}")
+        with col2:
+            lon = st.number_input(f"Longitude {i + 1}", key=f"lon_{i}")
+        
+        demand_centers.append({"id": i + 1, "latitude": lat, "longitude": lon})
+
+    if st.button("Generate Outlets"):
+        try:
+            response = requests.post(f"http://localhost:5000/demand-centers", json={"demandCenters": demand_centers})
+            response_data = response.json()
+
+            if response.status_code == 200:
+                st.success("Optimization successful!")
+                map_url = response_data.get("map_url")
+                assignments = pd.DataFrame(response_data.get("assignments", []))
+
+                st.write("Assignments:")
+                st.dataframe(assignments)
+
+                if map_url:
+                    geojson_url = f"http://localhost:5000{map_url}"
+                    st.markdown(f"[Download GeoJSON File]({geojson_url})", unsafe_allow_html=True)
+
+                    def view_geojson():
+                        try:
+                            geojson_data = requests.get(geojson_url).json()
+                            geojson_string = json.dumps(geojson_data)
+                            geojson_encoded = requests.utils.quote(geojson_string)
+                            geojson_io_url = f"https://geojson.io/#data=data:application/json,{geojson_encoded}"
+                            st.markdown(f'<a href="{geojson_io_url}" target="_blank">View in Mapbox/GeoJSON Viewer</a>', unsafe_allow_html=True)
+                        except Exception as e:
+                            st.error(f"Failed to load GeoJSON: {e}")
+
+                    view_geojson()
+
+            else:
+                st.error(f"Error: {response_data.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            st.error(f"Failed to connect to the backend: {e}")
+
+# Run Flask in a separate thread
+def run_flask():
+    app.run(debug=True, use_reloader=False)
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+
+    run_streamlit()
