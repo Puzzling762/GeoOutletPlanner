@@ -159,11 +159,11 @@ def run_streamlit():
             lat = st.number_input(f"Latitude {i + 1}", key=f"lat_{i}")
         with col2:
             lon = st.number_input(f"Longitude {i + 1}", key=f"lon_{i}")
-        
+
         demand_centers.append({"id": i + 1, "latitude": lat, "longitude": lon})
 
     if st.button("Generate Outlets"):
-        progress_bar=st.progress(0)
+        progress_bar = st.progress(0)
         try:
             progress_bar.progress(10)
             response = requests.post(f"http://localhost:5000/demand-centers", json={"demandCenters": demand_centers})
